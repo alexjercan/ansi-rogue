@@ -1,3 +1,4 @@
+#include <ctype.h>
 #include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
@@ -8,15 +9,17 @@
 
 #define MAP_FILE "world.txt"
 
-#define PLAYER_CH "@"
-#define FLOOR_CH "."
-#define WALL_CH "#"
-#define TREE_CH "&"
+#define PLAYER_CH '@'
+#define FLOOR_CH '.'
+#define WALL_CH '#'
+#define TREE_CH '&'
 
-#define PLAYER "\033[33m" PLAYER_CH "\033[m"
-#define FLOOR "\033[30m" FLOOR_CH "\033[m"
-#define WALL "\033[37m" WALL_CH "\033[m"
-#define TREE "\033[32m" TREE_CH "\033[m"
+#define RESET_COL "\033[m"
+#define PLAYER_COL "\033[33m"
+#define ENEMY_COL "\033[31m"
+#define FLOOR_COL "\033[30m"
+#define WALL_COL "\033[37m"
+#define TREE_COL "\033[32m"
 #define CLEAR_SCREEN_ANSI "\e[1;1H\e[2J"
 
 #define MOVE_UP 'w'
@@ -28,19 +31,69 @@
 #define WIDTH 16
 #define HEIGHT 8
 
-typedef enum tile_kind {
-    floor,
-    wall,
-    tree
-} tile_kind;
+typedef char tile_kind;
+
+void tile_kind_print(tile_kind t) {
+    if (t == FLOOR_CH) {
+        printf("%s%c%s", FLOOR_COL, FLOOR_CH, RESET_COL);
+    } else if (t == WALL_CH) {
+        printf("%s%c%s", WALL_COL, WALL_CH, RESET_COL);
+    } else if (t == TREE_CH) {
+        printf("%s%c%s", TREE_COL, TREE_CH, RESET_COL);
+    } else {
+        DS_PANIC("unreachable");
+    }
+}
+
+typedef struct uvec2 {
+    unsigned int x;
+    unsigned int y;
+} uvec2;
+
+typedef struct entity {
+    uvec2 position;
+    char symbol;
+} entity;
+
+void entity_print(entity e) {
+    if (e.symbol == PLAYER_CH) {
+        printf("%s%c%s", PLAYER_COL, PLAYER_CH, RESET_COL);
+    } else {
+        printf("%s%c%s", ENEMY_COL, e.symbol, RESET_COL);
+    }
+}
 
 typedef struct world {
-    unsigned int player_row;
-    unsigned int player_col;
+    entity player;
     unsigned int width;
     unsigned int height;
     ds_dynamic_array /* tile_kind */ tiles;
+    ds_dynamic_array /* entity */ enemies;
 } world_t;
+
+void world_move_player(world_t *world, char input) {
+    unsigned int player_row = world->player.position.y;
+    unsigned int player_col = world->player.position.x;
+
+    if (input == MOVE_UP) {
+        player_row--;
+    } else if (input == MOVE_LEFT) {
+        player_col--;
+    } else if (input == MOVE_DOWN) {
+        player_row++;
+    } else if (input == MOVE_RIGHT) {
+        player_col++;
+    }
+
+    tile_kind kind;
+    unsigned int index = player_row * world->width + player_col;
+    ds_dynamic_array_get(&world->tiles, index, &kind);
+
+    if (kind != WALL_CH) {
+        world->player.position.y = player_row;
+        world->player.position.x = player_col;
+    }
+}
 
 void world_print(world_t *world) {
     for (unsigned int index = 0; index < world->tiles.count; index++) {
@@ -54,19 +107,22 @@ void world_print(world_t *world) {
             printf("\n");
         }
 
-        if (row == world->player_row && col == world->player_col) {
-            printf(PLAYER);
+        if (row == world->player.position.y && col == world->player.position.x) {
+            entity_print(world->player);
         } else {
-            switch (kind) {
-            case floor:
-                printf(FLOOR);
-                break;
-            case wall:
-                printf(WALL);
-                break;
-            case tree:
-                printf(TREE);
-              break;
+            int show_tile = 1;
+
+            for (unsigned int j = 0; j < world->enemies.count; j++) {
+                entity e;
+                ds_dynamic_array_get(&world->enemies, j, &e);
+                if (row == e.position.y && col == e.position.x) {
+                    entity_print(e);
+                    show_tile = 0;
+                }
+            }
+
+            if (show_tile) {
+                tile_kind_print(kind);
             }
         }
     }
@@ -76,6 +132,7 @@ void world_print(world_t *world) {
 
 void parse_world(char *buffer, unsigned int length, world_t *world) {
     ds_dynamic_array_init(&world->tiles, sizeof(tile_kind));
+    ds_dynamic_array_init(&world->enemies, sizeof(entity));
 
     ds_string_slice slice;
     ds_string_slice_init(&slice, buffer, length);
@@ -90,16 +147,21 @@ void parse_world(char *buffer, unsigned int length, world_t *world) {
         for (unsigned int col = 0; col < line_length; col++) {
             tile_kind kind;
 
-            if (strncmp(line_str + col, PLAYER_CH, 1) == 0) {
-                world->player_row = row;
-                world->player_col = col;
-                kind = floor;
-            } else if (strncmp(line_str + col, FLOOR_CH, 1) == 0) {
-                kind = floor;
-            } else if (strncmp(line_str + col, WALL_CH, 1) == 0) {
-                kind = wall;
-            } else if (strncmp(line_str + col, TREE_CH, 1) == 0) {
-                kind = tree;
+            if (line_str[col] == PLAYER_CH) {
+                world->player.position.y = row;
+                world->player.position.x = col;
+                world->player.symbol = PLAYER_CH;
+                kind = FLOOR_CH;
+            } else if (line_str[col] == FLOOR_CH) {
+                kind = FLOOR_CH;
+            } else if (line_str[col] == WALL_CH) {
+                kind = WALL_CH;
+            } else if (line_str[col] == TREE_CH) {
+                kind = TREE_CH;
+            } else if (isalpha(line_str[col])) {
+                entity e = { .position = { .x = col, .y = row }, .symbol = line_str[col] };
+                ds_dynamic_array_append(&world->enemies, &e);
+                kind = FLOOR_CH;
             } else {
                 continue;
             }
@@ -114,13 +176,17 @@ void parse_world(char *buffer, unsigned int length, world_t *world) {
     world->height = row;
 }
 
-char input;
+typedef struct input {
+    char last_key;
+} input_t;
 
-void *input_thread() {
+void *input_thread(void *arg) {
+    input_t *input = (input_t *)arg;
+
     for (;;) {
-        input = getchar();
+        input->last_key = getchar();
 
-        if (input == QUIT_KEY) {
+        if (input->last_key == QUIT_KEY) {
             break;
         }
     }
@@ -135,23 +201,17 @@ int main(void) {
     unsigned int length = ds_io_read_file(MAP_FILE, &buffer);
     parse_world(buffer, length, &world);
 
+    input_t input;
     pthread_t input_thread_id;
-    pthread_create(&input_thread_id, NULL, input_thread, NULL);
+    pthread_create(&input_thread_id, NULL, input_thread, &input);
 
     while (1) {
         // update
-        if (input == MOVE_UP) {
-            world.player_row--;
-        } else if (input == MOVE_LEFT) {
-            world.player_col--;
-        } else if (input == MOVE_DOWN) {
-            world.player_row++;
-        } else if (input == MOVE_RIGHT) {
-            world.player_col++;
-        } else if (input == QUIT_KEY) {
+        world_move_player(&world, input.last_key);
+        if (input.last_key == QUIT_KEY) {
             break;
         }
-        input = 0;
+        input.last_key = 0;
 
         // render
         system("stty cooked");
