@@ -14,14 +14,29 @@
 #define FLOOR_CH '.'
 #define WALL_CH '#'
 #define TREE_CH '&'
+#define DOOR_CH '|'
+#define KEY_CH '-'
+#define GOLD_CH '$'
 
 #define RESET_COL "\033[m"
-#define PLAYER_COL "\033[33m"
-#define ENEMY_COL "\033[31m"
-#define FLOOR_COL "\033[30m"
-#define WALL_COL "\033[37m"
-#define TREE_COL "\033[32m"
+#define BLACK_COL "\033[30m"
+#define RED_COL "\033[31m"
+#define GREEN_COL "\033[32m"
+#define YELLOW_COL "\033[33m"
+#define BLUE_COL "\033[34m"
+#define MAGENTA_COL "\033[35m"
+#define CYAN_COL "\033[36m"
+#define WHITE_COL "\033[37m"
 #define CLEAR_SCREEN_ANSI "\e[1;1H\e[2J"
+
+#define PLAYER_COL YELLOW_COL
+#define ENEMY_COL RED_COL
+#define FLOOR_COL BLACK_COL
+#define WALL_COL WHITE_COL
+#define TREE_COL GREEN_COL
+#define DOOR_COL MAGENTA_COL
+#define KEY_COL MAGENTA_COL
+#define GOLD_COL YELLOW_COL
 
 #define MOVE_UP 'w'
 #define MOVE_LEFT 'a'
@@ -36,14 +51,24 @@ typedef char tile_kind;
 
 void tile_kind_print(tile_kind t) {
     if (t == FLOOR_CH) {
-        printf("%s%c%s", FLOOR_COL, FLOOR_CH, RESET_COL);
+        printf("%s%c%s", FLOOR_COL, t, RESET_COL);
     } else if (t == WALL_CH) {
-        printf("%s%c%s", WALL_COL, WALL_CH, RESET_COL);
+        printf("%s%c%s", WALL_COL, t, RESET_COL);
     } else if (t == TREE_CH) {
-        printf("%s%c%s", TREE_COL, TREE_CH, RESET_COL);
+        printf("%s%c%s", TREE_COL, t, RESET_COL);
+    } else if (t == DOOR_CH) {
+        printf("%s%c%s", DOOR_COL, t, RESET_COL);
+    } else if (t == KEY_CH) {
+        printf("%s%c%s", KEY_COL, t, RESET_COL);
+    } else if (t == GOLD_CH) {
+        printf("%s%c%s", GOLD_COL, t, RESET_COL);
     } else {
         DS_PANIC("unreachable");
     }
+}
+
+int tile_kind_is_impassible(tile_kind t) {
+    return (t == WALL_CH || t == DOOR_CH);
 }
 
 typedef struct uvec2 {
@@ -64,8 +89,20 @@ void entity_print(entity e) {
     }
 }
 
+typedef struct inventory {
+    unsigned int keys;
+    unsigned int gold;
+} inventory;
+
+void inventory_print(inventory v) {
+    printf(GREEN_COL "Inventory:\n" RESET_COL);
+    printf(KEY_COL "- keys: %d\n" RESET_COL, v.keys);
+    printf(GOLD_COL "- gold: %d\n" RESET_COL, v.gold);
+}
+
 typedef struct world {
     entity player;
+    inventory inventory;
     unsigned int width;
     unsigned int height;
     ds_dynamic_array /* tile_kind */ tiles;
@@ -77,7 +114,7 @@ void world_free(world_t *world) {
     ds_dynamic_array_free(&world->enemies);
 }
 
-void world_move_player(world_t *world, char input) {
+void handle_input(world_t *world, char input) {
     unsigned int player_row = world->player.position.y;
     unsigned int player_col = world->player.position.x;
 
@@ -91,13 +128,26 @@ void world_move_player(world_t *world, char input) {
         player_col++;
     }
 
-    tile_kind kind;
+    tile_kind *tile = NULL;
     unsigned int index = player_row * world->width + player_col;
-    ds_dynamic_array_get(&world->tiles, index, &kind);
+    ds_dynamic_array_get_ref(&world->tiles, index, (void **)&tile);
 
-    if (kind != WALL_CH) {
+    if (*tile == DOOR_CH && world->inventory.keys > 0) {
+        world->inventory.keys -= 1;
+        *tile = FLOOR_CH;
+    }
+
+    if (tile_kind_is_impassible(*tile) == 0) {
         world->player.position.y = player_row;
         world->player.position.x = player_col;
+    }
+
+    if (*tile == KEY_CH) {
+        world->inventory.keys += 1;
+        *tile = FLOOR_CH;
+    } else if (*tile == GOLD_CH) {
+        world->inventory.gold += 1;
+        *tile = FLOOR_CH;
     }
 }
 
@@ -134,9 +184,14 @@ void world_print(world_t *world) {
     }
 
     printf("\n");
+
+    inventory_print(world->inventory);
+
+    printf("\n");
 }
 
 void world_parse(char *buffer, unsigned int length, world_t *world) {
+    memset(&world->inventory, 0, sizeof(inventory));
     ds_dynamic_array_init(&world->tiles, sizeof(tile_kind));
     ds_dynamic_array_init(&world->enemies, sizeof(entity));
 
@@ -160,12 +215,6 @@ void world_parse(char *buffer, unsigned int length, world_t *world) {
                 world->player.position.x = col;
                 world->player.symbol = PLAYER_CH;
                 kind = FLOOR_CH;
-            } else if (line[col] == FLOOR_CH) {
-                kind = FLOOR_CH;
-            } else if (line[col] == WALL_CH) {
-                kind = WALL_CH;
-            } else if (line[col] == TREE_CH) {
-                kind = TREE_CH;
             } else if (isalpha(line[col])) {
                 entity e = { .position = { .x = col, .y = row }, .symbol = line[col] };
                 if (ds_dynamic_array_append(&world->enemies, &e) != 0) {
@@ -173,7 +222,7 @@ void world_parse(char *buffer, unsigned int length, world_t *world) {
                 }
                 kind = FLOOR_CH;
             } else {
-                continue;
+                kind = line[col];
             }
 
             if (ds_dynamic_array_append(&world->tiles, &kind) != 0) {
@@ -288,7 +337,7 @@ int a_star(world_t *w, uvec2 start, uvec2 end, ds_dynamic_array /* uvec2 */ *p) 
             ds_dynamic_array_get(&w->tiles, neighbor_index, &tile);
 
             if (neighbor.x < 0 || neighbor.x >= w->width || neighbor.y < 0 ||
-                neighbor.y >= w->height || tile == WALL_CH) {
+                neighbor.y >= w->height || tile_kind_is_impassible(tile)) {
                 continue;
             }
 
@@ -365,7 +414,7 @@ int main(void) {
 
     while (1) {
         // update
-        world_move_player(&world, input.last_key);
+        handle_input(&world, input.last_key);
         if (input.last_key == QUIT_KEY) {
             break;
         }
